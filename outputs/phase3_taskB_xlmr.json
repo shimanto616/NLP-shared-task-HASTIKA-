@@ -1,0 +1,174 @@
+{
+  "phase": 3,
+  "task": "B",
+  "model_key": "xlmr",
+  "model_name": "xlm-roberta-base",
+  "env": {
+    "torch": "2.13.0+xpu",
+    "device": "xpu",
+    "amp_bf16": true,
+    "seed": 42,
+    "n_splits": 5
+  },
+  "hyperparams": {
+    "lr": 2e-05,
+    "bs": 8,
+    "wd": 0.01,
+    "warmup": 0.1,
+    "max_len": 96,
+    "max_epochs": 8,
+    "patience": 3,
+    "weighted_loss": true,
+    "optim": "AdamW",
+    "schedule": "linear warmup"
+  },
+  "protocol": "fresh pretrained model per fold; StratifiedGroupKFold grouped by normalised text; early stop on fold macro-F1",
+  "folds": [
+    {
+      "fold": 1,
+      "best_epoch": 1,
+      "macro_f1": 0.14178988084097574,
+      "secs": 187.2
+    },
+    {
+      "fold": 2,
+      "best_epoch": 7,
+      "macro_f1": 0.547439168335205,
+      "secs": 355.7
+    },
+    {
+      "fold": 3,
+      "best_epoch": 8,
+      "macro_f1": 0.4455530946066775,
+      "secs": 349.6
+    },
+    {
+      "fold": 4,
+      "best_epoch": 8,
+      "macro_f1": 0.530423466718033,
+      "secs": 349.2
+    },
+    {
+      "fold": 5,
+      "best_epoch": 8,
+      "macro_f1": 0.5397927763152944,
+      "secs": 349.0
+    }
+  ],
+  "macro_f1_mean": 0.4409996773632371,
+  "macro_f1_std": 0.15403460110311543,
+  "pooled_macro_f1": 0.4526706620875365,
+  "pooled_accuracy": 0.5194681861348528,
+  "mean_best_epoch": 6.4,
+  "per_class": {
+    "Gender": {
+      "precision": 0.7141509433962264,
+      "recall": 0.5558002936857562,
+      "f1-score": 0.6251032204789431,
+      "support": 1362.0
+    },
+    "Geo-political": {
+      "precision": 0.4550898203592814,
+      "recall": 0.40860215053763443,
+      "f1-score": 0.43059490084985835,
+      "support": 186.0
+    },
+    "Others": {
+      "precision": 0.3102803738317757,
+      "recall": 0.36971046770601335,
+      "f1-score": 0.33739837398373984,
+      "support": 449.0
+    },
+    "Political": {
+      "precision": 0.5529411764705883,
+      "recall": 0.5885509838998211,
+      "f1-score": 0.5701906412478336,
+      "support": 559.0
+    },
+    "Religion": {
+      "precision": 0.44481054365733114,
+      "recall": 0.7068062827225131,
+      "f1-score": 0.5460060667340748,
+      "support": 382.0
+    },
+    "Violence": {
+      "precision": 0.2205128205128205,
+      "recall": 0.19457013574660634,
+      "f1-score": 0.20673076923076922,
+      "support": 221.0
+    },
+    "accuracy": 0.5194681861348528,
+    "macro avg": {
+      "precision": 0.44963094637133727,
+      "recall": 0.4706733857163908,
+      "f1-score": 0.4526706620875365,
+      "support": 3159.0
+    },
+    "weighted avg": {
+      "precision": 0.5458630129789321,
+      "recall": 0.5194681861348528,
+      "f1-score": 0.5242075003858971,
+      "support": 3159.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      757,
+      36,
+      253,
+      130,
+      112,
+      74
+    ],
+    [
+      21,
+      76,
+      14,
+      18,
+      46,
+      11
+    ],
+    [
+      145,
+      11,
+      166,
+      52,
+      40,
+      35
+    ],
+    [
+      59,
+      14,
+      34,
+      329,
+      106,
+      17
+    ],
+    [
+      31,
+      13,
+      18,
+      35,
+      270,
+      15
+    ],
+    [
+      47,
+      17,
+      50,
+      31,
+      33,
+      43
+    ]
+  ],
+  "labels": [
+    "Gender",
+    "Geo-political",
+    "Others",
+    "Political",
+    "Religion",
+    "Violence"
+  ],
+  "runtime_secs": 1591.0,
+  "refit": null
+}

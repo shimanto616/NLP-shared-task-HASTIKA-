@@ -1,0 +1,106 @@
+{
+  "phase": 3,
+  "task": "A",
+  "model_key": "xlmr",
+  "model_name": "xlm-roberta-base",
+  "env": {
+    "torch": "2.13.0+xpu",
+    "device": "xpu",
+    "amp_bf16": true,
+    "seed": 42,
+    "n_splits": 5
+  },
+  "hyperparams": {
+    "lr": 2e-05,
+    "bs": 8,
+    "wd": 0.01,
+    "warmup": 0.1,
+    "max_len": 96,
+    "max_epochs": 5,
+    "patience": 2,
+    "weighted_loss": false,
+    "optim": "AdamW",
+    "schedule": "linear warmup"
+  },
+  "protocol": "fresh pretrained model per fold; StratifiedGroupKFold grouped by normalised text; early stop on fold macro-F1",
+  "folds": [
+    {
+      "fold": 1,
+      "best_epoch": 5,
+      "macro_f1": 0.7835428581051295,
+      "secs": 610.5
+    },
+    {
+      "fold": 2,
+      "best_epoch": 3,
+      "macro_f1": 0.7976100809643832,
+      "secs": 448.6
+    },
+    {
+      "fold": 3,
+      "best_epoch": 5,
+      "macro_f1": 0.7720793269230769,
+      "secs": 448.4
+    },
+    {
+      "fold": 4,
+      "best_epoch": 5,
+      "macro_f1": 0.7380886437457422,
+      "secs": 445.5
+    },
+    {
+      "fold": 5,
+      "best_epoch": 5,
+      "macro_f1": 0.781688989688483,
+      "secs": 444.3
+    }
+  ],
+  "macro_f1_mean": 0.774601979885363,
+  "macro_f1_std": 0.019995625624449426,
+  "pooled_macro_f1": 0.7747231862692996,
+  "pooled_accuracy": 0.7747440273037542,
+  "mean_best_epoch": 4.6,
+  "per_class": {
+    "Hate": {
+      "precision": 0.7648883374689827,
+      "recall": 0.7803797468354431,
+      "f1-score": 0.7725563909774437,
+      "support": 3160.0
+    },
+    "Non-Hate": {
+      "precision": 0.7846058348851644,
+      "recall": 0.7693244065733414,
+      "f1-score": 0.7768899815611555,
+      "support": 3286.0
+    },
+    "accuracy": 0.7747440273037542,
+    "macro avg": {
+      "precision": 0.7747470861770736,
+      "recall": 0.7748520767043923,
+      "f1-score": 0.7747231862692996,
+      "support": 6446.0
+    },
+    "weighted avg": {
+      "precision": 0.7749397951961892,
+      "recall": 0.7747440273037542,
+      "f1-score": 0.774765540629643,
+      "support": 6446.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      2466,
+      694
+    ],
+    [
+      758,
+      2528
+    ]
+  ],
+  "labels": [
+    "Hate",
+    "Non-Hate"
+  ],
+  "runtime_secs": 2397.6,
+  "refit": null
+}

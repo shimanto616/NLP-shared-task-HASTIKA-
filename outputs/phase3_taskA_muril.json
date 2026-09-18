@@ -1,0 +1,106 @@
+{
+  "phase": 3,
+  "task": "A",
+  "model_key": "muril",
+  "model_name": "google/muril-base-cased",
+  "env": {
+    "torch": "2.13.0+xpu",
+    "device": "xpu",
+    "amp_bf16": true,
+    "seed": 42,
+    "n_splits": 5
+  },
+  "hyperparams": {
+    "lr": 2e-05,
+    "bs": 8,
+    "wd": 0.01,
+    "warmup": 0.1,
+    "max_len": 96,
+    "max_epochs": 5,
+    "patience": 2,
+    "weighted_loss": false,
+    "optim": "AdamW",
+    "schedule": "linear warmup"
+  },
+  "protocol": "fresh pretrained model per fold; StratifiedGroupKFold grouped by normalised text; early stop on fold macro-F1",
+  "folds": [
+    {
+      "fold": 1,
+      "best_epoch": 4,
+      "macro_f1": 0.797382731412499,
+      "secs": 409.2
+    },
+    {
+      "fold": 2,
+      "best_epoch": 5,
+      "macro_f1": 0.7922475626406169,
+      "secs": 407.3
+    },
+    {
+      "fold": 3,
+      "best_epoch": 4,
+      "macro_f1": 0.7759688576220525,
+      "secs": 404.3
+    },
+    {
+      "fold": 4,
+      "best_epoch": 5,
+      "macro_f1": 0.7818311145403527,
+      "secs": 405.5
+    },
+    {
+      "fold": 5,
+      "best_epoch": 5,
+      "macro_f1": 0.7880218836189357,
+      "secs": 405.8
+    }
+  ],
+  "macro_f1_mean": 0.7870904299668913,
+  "macro_f1_std": 0.007546454300463031,
+  "pooled_macro_f1": 0.7874054159665658,
+  "pooled_accuracy": 0.7874650946323302,
+  "mean_best_epoch": 4.6,
+  "per_class": {
+    "Hate": {
+      "precision": 0.7816236626809314,
+      "recall": 0.7860759493670886,
+      "f1-score": 0.7838434837488166,
+      "support": 3160.0
+    },
+    "Non-Hate": {
+      "precision": 0.7931456548347613,
+      "recall": 0.7888009738283628,
+      "f1-score": 0.7909673481843149,
+      "support": 3286.0
+    },
+    "accuracy": 0.7874650946323302,
+    "macro avg": {
+      "precision": 0.7873846587578464,
+      "recall": 0.7874384615977257,
+      "f1-score": 0.7874054159665658,
+      "support": 6446.0
+    },
+    "weighted avg": {
+      "precision": 0.7874972689821236,
+      "recall": 0.7874650946323302,
+      "f1-score": 0.7874750410766242,
+      "support": 6446.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      2484,
+      676
+    ],
+    [
+      694,
+      2592
+    ]
+  ],
+  "labels": [
+    "Hate",
+    "Non-Hate"
+  ],
+  "runtime_secs": 2032.3,
+  "refit": null
+}
