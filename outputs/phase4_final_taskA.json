@@ -1,0 +1,29 @@
+{
+  "task": "A",
+  "selected": {
+    "name": "tfidf",
+    "weights": {
+      "tfidf": 1.0
+    },
+    "oof_macro_f1": 0.8116417656246255,
+    "parsimony_applied": true
+  },
+  "weights": {
+    "tfidf": 1.0
+  },
+  "submission_file": "outputs\\taskA_predictions_final.csv",
+  "row_count": 806,
+  "prediction_distribution": {
+    "Hate": 376,
+    "Non-Hate": 430
+  },
+  "checks": {
+    "row count matches inputs": true,
+    "all labels in allowed set": true,
+    "no empty predictions": true,
+    "header is 'id,label'": true,
+    "ids identical to inputs order": true,
+    "no null cells": true
+  },
+  "timestamp": "2026-09-19 12:30"
+}

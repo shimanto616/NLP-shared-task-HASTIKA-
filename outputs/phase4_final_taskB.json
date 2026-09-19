@@ -1,0 +1,35 @@
+{
+  "task": "B",
+  "selected": {
+    "name": "tfidf*0.85+muril*0.15",
+    "weights": {
+      "tfidf": 0.85,
+      "muril": 0.15
+    },
+    "oof_macro_f1": 0.6273874922541566,
+    "parsimony_applied": false
+  },
+  "weights": {
+    "tfidf": 0.85,
+    "muril": 0.15
+  },
+  "submission_file": "outputs\\taskB_predictions_final.csv",
+  "row_count": 395,
+  "prediction_distribution": {
+    "Gender": 197,
+    "Political": 76,
+    "Religion": 37,
+    "Geo-political": 23,
+    "Violence": 9,
+    "Others": 53
+  },
+  "checks": {
+    "row count matches inputs": true,
+    "all labels in allowed set": true,
+    "no empty predictions": true,
+    "header is 'id,label'": true,
+    "ids identical to inputs order": true,
+    "no null cells": true
+  },
+  "timestamp": "2026-09-19 12:31"
+}

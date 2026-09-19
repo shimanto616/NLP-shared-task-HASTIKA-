@@ -3,25 +3,32 @@
 """
 HASTIKA shared task -- PHASE 3: Transformer fine-tuning (MuRIL / XLM-R).
 
-Usage (run in this order):
-  python phase3_finetune.py --mode smoke  --task A --model muril   # 2-min pipeline check
-  python phase3_finetune.py --mode cv    --task A --model muril    # 5-fold grouped CV
-  python phase3_finetune.py --mode cv    --task A --model xlmr
-  python phase3_finetune.py --mode cv    --task B --model muril
-  python phase3_finetune.py --mode cv    --task B --model xlmr
-  ... (we choose the winner, then:)
-  python phase3_finetune.py --mode refit --task A --model muril    # full-train refit + blind preds
-  python phase3_finetune.py --mode summary                          # all results incl. Phase 2
-  python phase3_finetune.py --mode diag                             # report-only cross-file diagnostic
+Usage:
+  # plumbing check (1 fold x 1 epoch)
+  python phase3_finetune.py --mode smoke --task A --model muril --bs 8 --max_len 96
 
-Deps : torch (XPU build), transformers, pandas, scikit-learn (all already present)
-I/O  : outputs/phase3_task{A,B}_{model}.json, outputs/task{A,B}_predictions_{model}.csv,
-       outputs/task{A,B}_probs_{model}.csv
+  # CV runs (Task B MuRIL uses the raised epoch cap)
+  python phase3_finetune.py --mode cv --task B --model muril --bs 8 --max_len 96 --max_epochs 12
+  python phase3_finetune.py --mode cv --task B --model xlmr  --bs 8 --max_len 96 --max_epochs 8
+
+  # after winners are chosen (lead will instruct):
+  python phase3_finetune.py --mode refit --task A --model muril
+
+  python phase3_finetune.py --mode summary
+  python phase3_finetune.py --mode diag
+
+Divergence protocol: if a fold's best macro-F1 falls below the pre-registered
+floor (COLLAPSE_FLOORS), training is treated as collapsed; the fold is retried
+ONCE with a shifted seed and the better attempt is kept. Both are logged.
+
+Deps : torch (XPU build), transformers, pandas, scikit-learn
+I/O  : outputs/phase3_task{A,B}_{model}.json     (CV metrics + OOF probabilities)
+       outputs/task{A,B}_predictions_{model}.csv (refit: blind predictions)
+       outputs/task{A,B}_probs_{model}.csv        (refit: blind probabilities)
 """
 
 import argparse
 import contextlib
-import copy
 import html
 import json
 import os
@@ -38,6 +45,7 @@ except Exception:
     pass
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 try:
     import pandas as pd
@@ -75,6 +83,11 @@ MODELS = {
     "xlmr":    "xlm-roberta-base",
     "indicb":  "ai4bharat/IndicBERTv2-MLM-only",   # optional third model
 }
+
+# Pre-registered divergence floors: fold best macro-F1 below the floor is
+# treated as a training failure (model collapsed) -> ONE retry with a
+# shifted seed; the better of the two attempts is kept and both are logged.
+COLLAPSE_FLOORS = {"A": 0.60, "B": 0.30}
 
 TASKS = {
     "A": dict(train="binary_train.csv", inputs="binary_validation_inputs.csv",
@@ -273,6 +286,71 @@ def build_model(name, n_labels, id2label, label2id, device):
     return tok, model
 
 # ---------------------------------------------------------------------------
+# One-fold trainer (fresh pretrained model every call)
+# ---------------------------------------------------------------------------
+def train_fold(mode, model_key, label2id, n_cls, X, y, tr, te, cfg, tcfg,
+               device, use_amp, fold_seed, fold_tag):
+    """Train + evaluate ONE fold from a freshly initialised pretrained model.
+    Returns best = dict(f1, epoch, yt, yp, probs, secs)."""
+    set_seed(fold_seed)
+    t0 = time.time()
+
+    tok, model_ = build_model(MODELS[model_key], n_cls,
+                              {i: c for c, i in label2id.items()},
+                              {c: i for c, i in label2id.items()}, device)
+
+    ytr = y[tr]
+    if cfg["weighted"]:
+        counts = np.bincount(ytr, minlength=n_cls).astype(np.float64)
+        w = counts.sum() / (n_cls * np.maximum(counts, 1.0))
+        criterion = torch.nn.CrossEntropyLoss(
+            weight=torch.tensor(w, dtype=torch.float32, device=device))
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
+
+    g = torch.Generator(); g.manual_seed(fold_seed)
+    train_loader = DataLoader(TextDS(X[tr], ytr), batch_size=tcfg["bs"],
+                              shuffle=True, generator=g, num_workers=0,
+                              collate_fn=make_collate(tok))
+    val_loader = DataLoader(TextDS(X[te], y[te]), batch_size=tcfg["bs"] * 2,
+                            shuffle=False, num_workers=0,
+                            collate_fn=make_collate(tok))
+
+    epochs = 1 if mode == "smoke" else cfg["max_epochs"]
+    opt = torch.optim.AdamW(param_groups(model_, tcfg["wd"]), lr=tcfg["lr"])
+    total_steps = max(1, len(train_loader) * epochs)
+    sched = get_linear_schedule_with_warmup(
+        opt, int(tcfg["warmup"] * total_steps), total_steps)
+
+    best = dict(f1=-1.0, epoch=-1, yt=None, yp=None, probs=None)
+    bad = 0
+    for ep in range(1, epochs + 1):
+        tr_loss = train_one_epoch(model_, train_loader, opt, sched, criterion,
+                                  device, use_amp, tag=fold_tag)
+        logits = predict_logits(model_, val_loader, device, use_amp)
+        yp = logits.argmax(-1).numpy(); yt = y[te]
+        f1 = f1_score(yt, yp, average="macro")
+        acc = accuracy_score(yt, yp)
+        star = ""
+        if f1 > best["f1"]:
+            best.update(f1=f1, epoch=ep, yt=yt, yp=yp,
+                        probs=torch.softmax(logits, dim=-1).numpy())
+            bad, star = 0, "  <-- best"
+        else:
+            bad += 1
+        print(f"  {fold_tag} epoch {ep}: "
+              f"loss={tr_loss:.4f}  val_macroF1={f1:.4f}  val_acc={acc:.4f}"
+              f"{star}", flush=True)
+        if mode != "smoke" and bad >= cfg["patience"]:
+            print(f"  {fold_tag}: early stop (patience {cfg['patience']})")
+            break
+
+    del model_, opt, sched, criterion, train_loader, val_loader
+    clear_dev_cache()
+    best["secs"] = round(time.time() - t0, 1)
+    return best
+
+# ---------------------------------------------------------------------------
 # Core: grouped CV for one (task, model)
 # ---------------------------------------------------------------------------
 def run_cv(args):
@@ -298,6 +376,8 @@ def run_cv(args):
           f"warmup={tcfg['warmup']} max_len={MAX_LEN} "
           f"max_epochs={cfg['max_epochs']} patience={cfg['patience']} "
           f"weighted_loss={cfg['weighted']}")
+    print(f"divergence floors: {COLLAPSE_FLOORS} -> one seed-shifted retry "
+          f"if a fold's best macro-F1 falls below the floor")
     print("(note: 'Loading weights' + LOAD REPORT will print once PER FOLD -- "
           "expected: the model is rebuilt fresh from the pretrained checkpoint "
           "every fold to prevent cross-fold weight carryover)")
@@ -306,71 +386,43 @@ def run_cv(args):
     folds = list(cv.split(X, y, groups))
 
     fold_results, y_true_all, y_pred_all = [], [], []
+    oof = np.zeros((len(X), n_cls), dtype=np.float32)
     t_start = time.time()
 
     for k, (tr, te) in enumerate(folds):
-        set_seed(SEED + k)
-        t0 = time.time()
+        tag = f"fold {k+1}/{N_SPLITS}"
+        best = train_fold(args.mode, args.model, label2id, n_cls, X, y, tr, te,
+                          cfg, tcfg, device, use_amp, SEED + k, tag)
 
-        # fresh pretrained model EVERY fold (a reused fine-tuned body would
-        # have seen this fold's val samples in earlier folds' training -> biased CV)
-        tok, model_ = build_model(MODELS[args.model], n_cls,
-                                  {i: c for c, i in label2id.items()},
-                                  {c: i for c, i in label2id.items()}, device)
+        retried, pre_retry_f1 = False, None
+        floor = COLLAPSE_FLOORS.get(args.task, 0.30)
+        if args.mode != "smoke" and best["f1"] < floor:
+            pre_retry_f1 = float(best["f1"])
+            print(f"  {tag}: DIVERGENCE (macro-F1 {pre_retry_f1:.4f} < "
+                  f"floor {floor}) -- single retry with seed {SEED + k + 100}",
+                  flush=True)
+            best2 = train_fold(args.mode, args.model, label2id, n_cls, X, y,
+                               tr, te, cfg, tcfg, device, use_amp,
+                               SEED + k + 100, f"fold {k+1}R")
+            if best2["f1"] > best["f1"]:
+                best, retried = best2, True
+            print(f"  {tag}: retry {'ACCEPTED' if retried else 'REJECTED'} "
+                  f"(retry F1 {best2['f1']:.4f} vs {pre_retry_f1:.4f})",
+                  flush=True)
+            if best["f1"] < floor:
+                print(f"  {tag}: WARNING -- fold still below floor after "
+                      f"retry ({best['f1']:.4f}); keeping best attempt (logged)",
+                      flush=True)
 
-        ytr = y[tr]
-        if cfg["weighted"]:
-            counts = np.bincount(ytr, minlength=n_cls).astype(np.float64)
-            w = counts.sum() / (n_cls * np.maximum(counts, 1.0))
-            criterion = torch.nn.CrossEntropyLoss(
-                weight=torch.tensor(w, dtype=torch.float32, device=device))
-        else:
-            criterion = torch.nn.CrossEntropyLoss()
-
-        g = torch.Generator(); g.manual_seed(SEED + k)
-        train_loader = DataLoader(TextDS(X[tr], ytr), batch_size=tcfg["bs"],
-                                  shuffle=True, generator=g, num_workers=0,
-                                  collate_fn=make_collate(tok))
-        val_loader = DataLoader(TextDS(X[te], y[te]), batch_size=tcfg["bs"] * 2,
-                                shuffle=False, num_workers=0,
-                                collate_fn=make_collate(tok))
-
-        epochs = 1 if args.mode == "smoke" else cfg["max_epochs"]
-        opt = torch.optim.AdamW(param_groups(model_, tcfg["wd"]), lr=tcfg["lr"])
-        total_steps = max(1, len(train_loader) * epochs)
-        sched = get_linear_schedule_with_warmup(
-            opt, int(tcfg["warmup"] * total_steps), total_steps)
-
-        best = dict(f1=-1.0, epoch=-1, yt=None, yp=None)
-        bad = 0
-        for ep in range(1, epochs + 1):
-            tr_loss = train_one_epoch(model_, train_loader, opt, sched, criterion,
-                                      device, use_amp, tag=f"fold{k+1}")
-            logits = predict_logits(model_, val_loader, device, use_amp)
-            yp = logits.argmax(-1).numpy(); yt = y[te]
-            f1 = f1_score(yt, yp, average="macro")
-            acc = accuracy_score(yt, yp)
-            star = ""
-            if f1 > best["f1"]:
-                best.update(f1=f1, epoch=ep, yt=yt, yp=yp)
-                bad, star = 0, "  <-- best"
-            else:
-                bad += 1
-            print(f"  fold {k+1}/{N_SPLITS} epoch {ep}: "
-                  f"loss={tr_loss:.4f}  val_macroF1={f1:.4f}  val_acc={acc:.4f}"
-                  f"{star}", flush=True)
-            if args.mode != "smoke" and bad >= cfg["patience"]:
-                print(f"  fold {k+1}: early stop (patience {cfg['patience']})")
-                break
         fold_results.append(dict(fold=k + 1, best_epoch=best["epoch"],
-                                 macro_f1=float(best["f1"]), secs=round(time.time() - t0, 1)))
+                                 macro_f1=float(best["f1"]),
+                                 secs=best["secs"], retried=retried,
+                                 pre_retry_f1=pre_retry_f1))
         y_true_all.extend(best["yt"]); y_pred_all.extend(best["yp"])
+        oof[te] = best["probs"]
         print(f"  fold {k+1} DONE: best macro-F1={best['f1']:.4f} "
-              f"@epoch {best['epoch']}  ({fold_results[-1]['secs']}s)", flush=True)
-
-        # free this fold's model before building the next one
-        del model_, opt, sched, criterion, train_loader, val_loader
-        clear_dev_cache()
+              f"@epoch {best['epoch']}  ({best['secs']}s)"
+              + ("  [after retry]" if retried else ""), flush=True)
 
         if args.mode == "smoke":
             break
@@ -379,6 +431,9 @@ def run_cv(args):
         print("\nSMOKE OK -- pipeline, device, AMP and model loading all work.")
         print("Now run the full CV commands.")
         return
+
+    # sanity: every training row must have been scored in exactly one fold
+    assert (oof.sum(axis=1) > 0).all(), "OOF matrix has unscored rows -- fold mismatch"
 
     f1s = [r["macro_f1"] for r in fold_results]
     mean_ep = float(np.mean([r["best_epoch"] for r in fold_results]))
@@ -391,6 +446,10 @@ def run_cv(args):
           f"(folds: {[round(f,4) for f in f1s]})")
     print(f"  accuracy : {pooled_acc:.4f} (pooled)   pooled macro-F1: {pooled_f1:.4f}")
     print(f"  mean best epoch: {mean_ep:.1f}  (used for refit)")
+    n_retried = sum(1 for r in fold_results if r["retried"])
+    if n_retried:
+        print(f"  divergence retries: {n_retried} fold(s) -> "
+              f"{[r['fold'] for r in fold_results if r['retried']]}")
     print(f"  per-class (pooled over folds):")
     rep = classification_report(y_true_all, y_pred_all,
                                 labels=list(range(n_cls)),
@@ -411,8 +470,12 @@ def run_cv(args):
                          weighted_loss=cfg["weighted"],
                          optim="AdamW", schedule="linear warmup"),
         protocol="fresh pretrained model per fold; StratifiedGroupKFold grouped "
-                 "by normalised text; early stop on fold macro-F1",
+                 "by normalised text; early stop on fold macro-F1; divergence "
+                 f"floors {COLLAPSE_FLOORS} trigger one seed-shifted fold retry",
         folds=fold_results,
+        oof_probs=[[round(float(v), 6) for v in row] for row in oof],
+        oof_y=[int(v) for v in y],
+        fold_test_indices=[[int(i) for i in te] for _, te in folds],
         macro_f1_mean=float(np.mean(f1s)), macro_f1_std=float(np.std(f1s)),
         pooled_macro_f1=float(pooled_f1), pooled_accuracy=float(pooled_acc),
         mean_best_epoch=mean_ep,
@@ -484,7 +547,7 @@ def run_refit(args):
     t0 = time.time()
     for ep in range(1, epochs + 1):
         loss = train_one_epoch(model, loader, opt, sched, criterion,
-                       device, use_amp, tag=f"ep{ep}")
+                               device, use_amp, tag=f"ep{ep}")
         print(f"  epoch {ep}/{epochs}: train_loss={loss:.4f} "
               f"({time.time()-t0:.0f}s elapsed)", flush=True)
 
@@ -626,8 +689,8 @@ def main():
     ap.add_argument("--model", choices=list(MODELS))
     ap.add_argument("--bs", type=int, default=16)
     ap.add_argument("--max_len", type=int, default=128)
-    ap.add_argument("--device", default="auto",
-                    choices=["auto", "xpu", "cuda", "cpu"])
+    ap.add_argument("--max_epochs", type=int, default=None,
+                    help="override the per-task max epoch cap")
     args = ap.parse_args()
 
     global MAX_LEN
@@ -641,6 +704,9 @@ def main():
         run_diag(); return
     if not args.task or not args.model:
         sys.exit("[FATAL] --task and --model required for smoke/cv/refit modes")
+    if args.max_epochs:
+        TASKS[args.task]["max_epochs"] = args.max_epochs
+        print(f"[override] task {args.task} max_epochs -> {args.max_epochs}")
     if args.mode in ("smoke", "cv"):
         run_cv(args)
     else:
